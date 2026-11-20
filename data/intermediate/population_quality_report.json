@@ -1,0 +1,29 @@
+{
+  "rows": 31134,
+  "counties_by_year": {
+    "2006": 3114,
+    "2007": 3114,
+    "2008": 3114,
+    "2009": 3114,
+    "2010": 3113,
+    "2011": 3113,
+    "2012": 3113,
+    "2013": 3113,
+    "2014": 3113,
+    "2015": 3113
+  },
+  "fips_only_in_2006_2009": [
+    "46113",
+    "51515"
+  ],
+  "fips_only_in_2010_2015": [
+    "46102"
+  ],
+  "fips_with_multiple_names": [
+    "22059"
+  ],
+  "state_format": "Full Census state names, not postal abbreviations",
+  "population_definition": "July 1 resident population estimate",
+  "geography_note": "Source vintages may use different county geographies. Review code and name changes before merging shipments or mortality. This output does not harmonize county boundaries or fill absent county-years.",
+  "validation": "Passed identifiers, unique keys, years, and population checks"
+}
