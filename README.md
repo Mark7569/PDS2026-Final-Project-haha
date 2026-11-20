@@ -48,9 +48,10 @@ omits both suppressed and zero counts, so the cleaner does not infer zeros.
 `deaths_complete` is true only when all four are reported. A death total with
 fewer than four reported categories is partial and must not be treated as a
 complete total. The cleaner emits county-years present in the source; a county-
-year absent entirely from the source will not appear. Build the analysis panel
-from the in-scope population table and left-join mortality to preserve those
-unreported county-years as missing.
+year absent entirely from the source will not appear. Build the in-scope sample
+from the population table, then inner-join mortality as specified in the
+analysis plan. Report and inspect county-years dropped by the join; do not treat
+absent mortality records as zero.
 
 ## Workflow
 
