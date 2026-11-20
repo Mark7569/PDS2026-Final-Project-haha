@@ -46,20 +46,45 @@ EXCLUDED_DRUGS = {"BUPRENORPHINE"}  # mainly used to treat opioid use disorder
 # Alaska is dropped per the project instructions (county boundaries change in 2010).
 # DC is not a state.
 NOT_CANDIDATES = {"AK", "DC"}
-# States with their own pill-mill, pain-clinic or prescribing laws during the study
-# window. Based on the team's policy review; verify against the NPHL appendix
-# before finalizing.
-CONCURRENT_POLICY = {
-    "GA": "pain clinic law, 2013",
-    "KY": "HB 1 pill mill law, 2012",
-    "LA": "pain clinic law, 2005 and 2008",
-    "MS": "pain clinic rules, 2011",
-    "NY": "I-STOP mandatory PDMP use, 2013",
-    "OH": "pill mill law, 2011",
-    "TN": "pain clinic law, 2011 to 2012",
-    "TX": "pain clinic law, 2010",
-    "WV": "pain clinic law, 2012",
+# State opioid prescribing rules with the force of law and pain clinic laws, with
+# the year each took effect. Sources:
+#   [CDC] CDC Public Health Law Program, "Menu of Pain Management Clinic Regulation"
+#         (laws through Sept 28, 2012; footnote adds AL, GA and IN by July 2013).
+#   [NPHL] Network for Public Health Law (Corey Davis), "Appendix B: State-by-State
+#         Summary of Opioid Prescribing Regulations and Guidelines" (hosted by the
+#         Arizona Department of Health Services).
+# Only years 2006 to 2015 matter here. Advisory guidelines are not listed.
+STATE_POLICIES = {
+    "AL": [(2013, "pain clinic law [CDC]; prescribing rule Ala. Admin. Code 540-X-4 [NPHL]")],
+    "GA": [(2013, "pain clinic law [CDC]; Ga. Comp. R. & Regs. 360-3-.06 [NPHL]")],
+    "IN": [(2013, "pain clinic law [CDC]"), (2014, "844 Ind. Admin. Code 5-6-3 [NPHL]")],
+    "KY": [(2012, "pain clinic law, KRS 218A.175 [CDC]"), (2013, "201 KAR 9:260 [NPHL]")],
+    "LA": [(2005, "pain clinic law, La. R.S. 40:2198.11 [CDC]"), (2008, "pain clinic rules [CDC]")],
+    "ME": [(2012, "Board of Licensure in Medicine rule, 02-373 Me. Code R. 21 [NPHL]")],
+    "MS": [(2012, "pain clinic rules, 30-17 Miss. Code R. 2640 [CDC, NPHL]")],
+    "NJ": [(2011, "N.J. Admin. Code 13:35-7.6 [NPHL]")],
+    "NM": [(2014, "N.M. Code R. 16.10.14.10 [NPHL]")],
+    "NY": [(2013, "I-STOP, N.Y. Pub. Health 3334-a(2) [NPHL]")],
+    "OH": [(2011, "pain clinic law, Ohio Rev. Code 4731.054 [CDC]")],
+    "OK": [(2010, "Okla. Stat. tit. 63, 2-302(M) [NPHL]")],
+    "RI": [(2014, "R.I. Admin. Code 31-2-6:3.0 [NPHL]")],
+    "TN": [(2011, "pain clinic law, Tenn. Code 63-1-301 [CDC]"), (2013, "Tenn. Code 53-11-308 [NPHL]")],
+    "TX": [(2007, "22 Tex. Admin. Code 170.3 [NPHL]"), (2009, "pain clinic law, Tex. Occ. Code 168 [CDC]"),
+           (2010, "pain clinic rules, 22 Tex. Admin. Code 195 [CDC]")],
+    "VT": [(2014, "Vt. Stat. tit. 18, 4289(d) [NPHL]")],
+    "WV": [(2012, "pain clinic law, W. Va. Code 16-5H [CDC]"), (2014, "W. Va. Code 60A-9-5a [NPHL]")],
 }
+# A candidate is excluded if any of its policies took effect in this window around
+# the treated state's policy year: three pre-policy years, three post-policy years
+# (the policy year counts as post), plus one more year in case of anticipation.
+WINDOW_BEFORE, WINDOW_AFTER = 3, 3
+
+
+def concurrent_policies(state, policy_year):
+    lo, hi = policy_year - WINDOW_BEFORE, policy_year + WINDOW_AFTER
+    return "; ".join(f"{y}: {d}" for y, d in STATE_POLICIES.get(state, []) if lo <= y <= hi)
+
+
 STATE_NAMES = {
     "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas", "CA": "California",
     "CO": "Colorado", "CT": "Connecticut", "DE": "Delaware", "DC": "District of Columbia",
@@ -130,7 +155,7 @@ def rank_candidates(panel, treated, policy_year):
     scores = pd.concat([trend_distance(panel, o, treated, policy_year) for o in OUTCOMES], axis=1)
     scores = scores[scores.index.isin(candidates)]
     scores["mean_gap"] = scores.mean(axis=1, skipna=False)
-    scores["concurrent_policy"] = scores.index.map(CONCURRENT_POLICY).fillna("")
+    scores["concurrent_policy"] = [concurrent_policies(s, policy_year) for s in scores.index]
     return scores.sort_values("mean_gap")
 
 
