@@ -31,6 +31,19 @@ Install [git-lfs](https://git-lfs.com) before cloning or pulling, so parquet fil
 git lfs install
 ```
 
+## Mortality cleaning
+
+Clean the course Vital Statistics ZIP into county-year drug-overdose death counts:
+
+```bash
+python code/02_mortality_clean.py ~/pds-data/US_VitalStatistics.zip \
+  data/intermediate/mortality_county_year.parquet
+```
+
+The output is keyed by five-digit county FIPS and year. It sums CDC cause codes
+D1-D4 (all drug-poisoning intents; not opioid-specific), preserves explicit
+`Missing` counts as unavailable, and assigns zero when no D1-D4 rows are present.
+
 ## Workflow
 
 - Work on a feature branch and merge into `main` through a reviewed pull request.
