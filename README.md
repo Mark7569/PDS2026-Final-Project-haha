@@ -42,7 +42,15 @@ python code/02_mortality_clean.py ~/pds-data/US_VitalStatistics.zip \
 
 The output is keyed by five-digit county FIPS and year. It sums CDC cause codes
 D1-D4 (all drug-poisoning intents; not opioid-specific), preserves explicit
-`Missing` counts as unavailable, and assigns zero when no D1-D4 rows are present.
+`Missing` counts and county-years with no D1-D4 rows as unavailable. The source
+omits both suppressed and zero counts, so the cleaner does not infer zeros.
+`reported_overdose_categories` counts reported numeric D1-D4 categories, and
+`deaths_complete` is true only when all four are reported. A death total with
+fewer than four reported categories is partial and must not be treated as a
+complete total. The cleaner emits county-years present in the source; a county-
+year absent entirely from the source will not appear. Build the analysis panel
+from the in-scope population table and left-join mortality to preserve those
+unreported county-years as missing.
 
 ## Workflow
 

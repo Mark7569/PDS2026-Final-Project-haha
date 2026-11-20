@@ -1,8 +1,8 @@
 """Clean CDC county-year drug overdose deaths from the Vital Statistics archive.
 
 The D1-D4 categories cover drug poisonings by intent; they are not opioid-specific.
-County-years with explicit "Missing" counts remain null, while county-years with
-no D1-D4 records are assigned zero.
+Explicit "Missing" counts and county-years with no D1-D4 records remain null,
+since the source omits both suppressed and zero counts.
 
 Usage:
     python 02_mortality_clean.py ~/pds-data/US_VitalStatistics.zip \
@@ -110,6 +110,7 @@ def clean_archive(zip_path):
             overdose.groupby(GROUP_KEYS)
             .agg(
                 drug_overdose_deaths=("deaths", lambda counts: counts.sum(min_count=1)),
+                reported_overdose_categories=("deaths", "count"),
                 count_is_missing=("count_is_missing", "any"),
             )
             .reset_index()
@@ -122,12 +123,18 @@ def clean_archive(zip_path):
         )
     else:
         result = all_county_years.copy()
-        result["drug_overdose_deaths"] = 0
+        result["drug_overdose_deaths"] = pd.Series(
+            pd.NA, index=result.index, dtype="Int64"
+        )
+        result["reported_overdose_categories"] = 0
         result["count_is_missing"] = False
 
-    result["drug_overdose_deaths"] = result["drug_overdose_deaths"].fillna(0)
     result.loc[result["count_is_missing"].fillna(False), "drug_overdose_deaths"] = pd.NA
     result["drug_overdose_deaths"] = result["drug_overdose_deaths"].astype("Int64")
+    result["reported_overdose_categories"] = (
+        result["reported_overdose_categories"].fillna(0).astype("Int64")
+    )
+    result["deaths_complete"] = result["reported_overdose_categories"].eq(4)
     return result.drop(columns="count_is_missing").sort_values(GROUP_KEYS)
 
 
@@ -141,10 +148,12 @@ def main():
     result.to_parquet(args.output, index=False)
 
     missing = int(result["drug_overdose_deaths"].isna().sum())
+    complete = int(result["deaths_complete"].sum())
     print(f"Wrote {len(result):,} county-year rows to {args.output}")
     print(f"Counties: {result['county_fips'].nunique():,}")
     print(f"Years: {result['year'].min()}-{result['year'].max()}")
     print(f"County-years with unavailable overdose counts: {missing:,}")
+    print(f"County-years with all four overdose categories reported: {complete:,}")
 
 
 if __name__ == "__main__":
