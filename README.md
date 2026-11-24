@@ -52,11 +52,30 @@ Run the following command from the repository root, replacing `/path/to/populati
 python code/03_population_clean.py --input-dir "/path/to/population" --output-dir data/intermediate
 ```
 
+## Mortality cleaning
+
+Clean the course Vital Statistics ZIP into county-year drug-overdose death counts:
+
+```bash
+python code/02_mortality_clean.py ~/pds-data/US_VitalStatistics.zip \
+  data/intermediate/mortality_county_year.parquet
+```
+
+The output is keyed by five-digit county FIPS and year. It sums CDC cause codes
+D1-D4 (all drug-poisoning intents; not opioid-specific), preserves explicit
+`Missing` counts and county-years with no D1-D4 rows as unavailable. The source
+omits both suppressed and zero counts, so the cleaner does not infer zeros.
+`reported_overdose_categories` counts reported numeric D1-D4 categories, and
+`deaths_complete` is true only when all four are reported. A death total with
+fewer than four reported categories is partial and must not be treated as a
+complete total. The cleaner emits county-years present in the source; a county-
+year absent entirely from the source will not appear. Build the in-scope sample
+from the population table, then inner-join mortality as specified in the
+analysis plan. Report and inspect county-years dropped by the join; do not treat
+absent mortality records as zero.
+
 ## Workflow
 
 - Work on a feature branch and merge into `main` through a reviewed pull request.
 - Write code as `.py` scripts, not notebooks.
 - Never modify source data; write cleaned outputs to `data/intermediate/`.
-
-
-
