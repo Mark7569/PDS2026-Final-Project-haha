@@ -65,6 +65,8 @@ The output is keyed by five-digit county FIPS and year. It sums CDC cause codes
 D1-D4 (all drug-poisoning intents; not opioid-specific), preserves explicit
 `Missing` counts and county-years with no D1-D4 rows as unavailable. The source
 omits both suppressed and zero counts, so the cleaner does not infer zeros.
+It also retains D1 deaths separately in `d1_deaths` (unintentional poisonings);
+an explicit `Missing` value or absent D1 row remains null, not zero.
 `reported_overdose_categories` counts reported numeric D1-D4 categories, and
 `deaths_complete` is true only when all four are reported. A death total with
 fewer than four reported categories is partial and must not be treated as a
@@ -73,6 +75,16 @@ year absent entirely from the source will not appear. Build the in-scope sample
 from the population table, then inner-join mortality as specified in the
 analysis plan. Report and inspect county-years dropped by the join; do not treat
 absent mortality records as zero.
+
+The primary analysis uses counties with 2006 population of at least 150,000.
+Among Florida, Washington, and the selected control states, D1 was reported for
+90.4% of county-years at a 100,000 cutoff (190 counties), 96.1% at 150,000
+(153 counties), and 98.6% at 250,000 (105 counties). The 150,000 cutoff keeps
+at least four counties in each selected state while substantially reducing
+unreported D1 counts; 129 of the 153 in-scope counties have D1 reported in all
+ten years. Missing D1 values remain unavailable. Both the panel builder and
+analysis script accept `--min-population-2006` to rerun the analysis with
+alternative thresholds.
 
 ## Workflow
 

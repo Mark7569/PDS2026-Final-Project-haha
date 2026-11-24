@@ -56,6 +56,9 @@ STATE_FIPS = {
     "WI": "55", "WY": "56",
 }
 STATE_ABBR = {v: k for k, v in STATE_FIPS.items()}
+MIN_POPULATION_2006 = 150_000
+ANALYSIS_STATES = set(POLICY_YEAR).union(*map(set, CONTROLS.values()))
+ANALYSIS_STATE_FIPS = {STATE_FIPS[state] for state in ANALYSIS_STATES}
 
 
 def name_key(name):
@@ -111,14 +114,58 @@ def shipments(arcos, population):
     return totals.groupby(["fips", "year"], as_index=False)["opioid_mme"].sum()
 
 
-def build_panel(arcos, population, mortality, deaths_column):
-    population = population[population["year"].isin(YEARS)]
-    mme = shipments(arcos, population)
+def build_panel(
+    arcos,
+    population,
+    mortality,
+    deaths_column="d1_deaths",
+    min_population_2006=MIN_POPULATION_2006,
+):
+    if min_population_2006 < 0:
+        raise ValueError("Minimum 2006 population cannot be negative")
+
+    population = population.loc[population["year"].isin(YEARS)].copy()
+    population_for_matching = population
+    population = population.loc[
+        population["fips"].str[:2].isin(ANALYSIS_STATE_FIPS)
+    ].copy()
+    pop_2006 = population.loc[
+        population["year"].eq(2006), ["fips", "population"]
+    ].rename(columns={"population": "population_2006"})
+    if pop_2006.duplicated("fips").any():
+        raise ValueError("Duplicate 2006 population rows by county FIPS")
+    population = population.merge(
+        pop_2006,
+        on="fips",
+        how="left",
+        validate="many_to_one",
+    )
+    missing_baseline = sorted(
+        population.loc[population["population_2006"].isna(), "fips"].unique()
+    )
+    if missing_baseline:
+        raise ValueError(
+            f"Analysis counties lack a 2006 population baseline: {missing_baseline}"
+        )
+    eligible_fips = set(
+        pop_2006.loc[
+            pop_2006["population_2006"].ge(min_population_2006), "fips"
+        ]
+    )
+    print(
+        f"2006 population cutoff >= {min_population_2006:,}: "
+        f"{len(eligible_fips):,} counties in scope; "
+        f"{pop_2006['fips'].nunique() - len(eligible_fips):,} below cutoff"
+    )
+    population = population.loc[population["fips"].isin(eligible_fips)].copy()
+
+    mme = shipments(arcos, population_for_matching)
+    mme = mme.loc[mme["fips"].isin(eligible_fips)]
     deaths = mortality.rename(columns={"county_fips": "fips", deaths_column: "overdose_deaths"})
     deaths = deaths.loc[deaths["year"].isin(YEARS), ["fips", "year", "overdose_deaths"]]
 
-    panel = population[["fips", "county", "year", "population"]]
-    sizes = {"population": len(panel)}
+    panel = population[["fips", "county", "year", "population", "population_2006"]]
+    sizes = {"in-scope population": len(panel)}
     panel = panel.merge(mme, on=["fips", "year"], how="inner", validate="one_to_one")
     sizes["with shipments"] = len(panel)
     panel = panel.merge(deaths, on=["fips", "year"], how="inner", validate="one_to_one")
@@ -128,9 +175,6 @@ def build_panel(arcos, population, mortality, deaths_column):
     panel["state"] = panel["fips"].str[:2].map(STATE_ABBR)
     panel["mme_per_capita"] = panel["opioid_mme"] / panel["population"]
     panel["deaths_per_100k"] = panel["overdose_deaths"] / panel["population"] * 1e5
-    # Fixed 2006 population, for a scope condition that does not change over time.
-    pop_2006 = population.loc[population["year"] == 2006, ["fips", "population"]]
-    panel = panel.merge(pop_2006.rename(columns={"population": "population_2006"}), on="fips", how="inner")
 
     comparisons = []
     for treated, policy_year in POLICY_YEAR.items():
@@ -156,9 +200,15 @@ def main():
     parser.add_argument("--mortality", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument(
+        "--min-population-2006",
+        type=int,
+        default=MIN_POPULATION_2006,
+        help="scope condition: keep counties at or above this 2006 population",
+    )
+    parser.add_argument(
         "--deaths-column",
-        default="drug_overdose_deaths",
-        help="mortality column used as the outcome (switch to the D1 column once it exists)",
+        default="d1_deaths",
+        help="mortality column used as the outcome",
     )
     args = parser.parse_args()
 
@@ -167,6 +217,7 @@ def main():
         pd.read_parquet(args.population),
         pd.read_parquet(args.mortality),
         args.deaths_column,
+        args.min_population_2006,
     )
     panel.to_parquet(args.output, index=False)
 

@@ -2,7 +2,8 @@
 
 The D1-D4 categories cover drug poisonings by intent; they are not opioid-specific.
 Explicit "Missing" counts and county-years with no D1-D4 records remain null,
-since the source omits both suppressed and zero counts.
+since the source omits both suppressed and zero counts. D1 deaths are also
+reported separately as `d1_deaths`; missing or absent D1 rows remain null.
 
 Usage:
     python 02_mortality_clean.py ~/pds-data/US_VitalStatistics.zip \
@@ -30,6 +31,7 @@ def clean_archive(zip_path):
     """Return one row per county and year, preserving unavailable counts as null."""
     county_years = []
     overdose_rows = []
+    d1_rows = []
 
     with zipfile.ZipFile(zip_path) as archive:
         members = []
@@ -97,6 +99,12 @@ def clean_archive(zip_path):
 
             overdose["deaths"] = deaths.astype("Int64")
             overdose["count_is_missing"] = count_is_missing
+            d1 = overdose.loc[
+                overdose["Drug/Alcohol Induced Cause Code"].eq("D1"),
+                GROUP_KEYS + ["deaths"],
+            ]
+            if not d1.empty:
+                d1_rows.append(d1)
             overdose_rows.append(
                 overdose[
                     GROUP_KEYS + ["deaths", "count_is_missing"]
@@ -129,8 +137,26 @@ def clean_archive(zip_path):
         result["reported_overdose_categories"] = 0
         result["count_is_missing"] = False
 
+    if d1_rows:
+        d1 = pd.concat(d1_rows, ignore_index=True)
+        d1_totals = (
+            d1.groupby(GROUP_KEYS)["deaths"]
+            .agg(lambda counts: counts.sum(min_count=1))
+            .rename("d1_deaths")
+            .reset_index()
+        )
+        result = result.merge(
+            d1_totals,
+            on=GROUP_KEYS,
+            how="left",
+            validate="one_to_one",
+        )
+    else:
+        result["d1_deaths"] = pd.Series(pd.NA, index=result.index, dtype="Int64")
+
     result.loc[result["count_is_missing"].fillna(False), "drug_overdose_deaths"] = pd.NA
     result["drug_overdose_deaths"] = result["drug_overdose_deaths"].astype("Int64")
+    result["d1_deaths"] = result["d1_deaths"].astype("Int64")
     result["reported_overdose_categories"] = (
         result["reported_overdose_categories"].fillna(0).astype("Int64")
     )
@@ -149,11 +175,13 @@ def main():
 
     missing = int(result["drug_overdose_deaths"].isna().sum())
     complete = int(result["deaths_complete"].sum())
+    d1_reported = int(result["d1_deaths"].notna().sum())
     print(f"Wrote {len(result):,} county-year rows to {args.output}")
     print(f"Counties: {result['county_fips'].nunique():,}")
     print(f"Years: {result['year'].min()}-{result['year'].max()}")
     print(f"County-years with unavailable overdose counts: {missing:,}")
     print(f"County-years with all four overdose categories reported: {complete:,}")
+    print(f"County-years with reported D1 deaths: {d1_reported:,}")
 
 
 if __name__ == "__main__":

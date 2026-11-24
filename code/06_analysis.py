@@ -20,7 +20,7 @@ models use only county-years with a reported count.
 
 Usage:
     python code/06_analysis.py data/intermediate/analysis_panel.parquet --output-dir outputs
-    python code/06_analysis.py panel.parquet --output-dir outputs --min-population-2006 100000
+    python code/06_analysis.py panel.parquet --output-dir outputs --min-population-2006 150000
 """
 
 import argparse
@@ -137,7 +137,10 @@ def main():
     parser.add_argument("--years-before", type=int, default=3)
     parser.add_argument("--years-after", type=int, default=3, help="years after the policy year to include")
     parser.add_argument(
-        "--min-population-2006", type=int, default=0, help="scope condition: keep counties at or above this size"
+        "--min-population-2006",
+        type=int,
+        default=150_000,
+        help="scope condition: keep counties at or above this 2006 population",
     )
     args = parser.parse_args()
 
