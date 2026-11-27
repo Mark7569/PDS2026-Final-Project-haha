@@ -33,10 +33,10 @@ Install [git-lfs](https://git-lfs.com) before cloning or pulling, so parquet fil
 git lfs install
 ```
 
-Install the Python dependencies for population cleaning:
+Install the Python dependencies:
 
 ```bash
-python -m pip install pandas pyarrow
+python -m pip install pandas pyarrow matplotlib statsmodels
 ```
 
 ## Population cleaning
@@ -72,19 +72,46 @@ an explicit `Missing` value or absent D1 row remains null, not zero.
 fewer than four reported categories is partial and must not be treated as a
 complete total. The cleaner emits county-years present in the source; a county-
 year absent entirely from the source will not appear. Build the in-scope sample
-from the population table, then inner-join mortality as specified in the
-analysis plan. Report and inspect county-years dropped by the join; do not treat
-absent mortality records as zero.
+from the population table, then left-join shipments and mortality independently.
+Missing mortality records must not remove valid shipment observations or become
+zero deaths. The primary outcome is D1, unintentional drug poisoning; it is not
+an opioid-specific death count.
 
-The primary analysis uses counties with 2006 population of at least 150,000.
-Among Florida, Washington, and the selected control states, D1 was reported for
-90.4% of county-years at a 100,000 cutoff (190 counties), 96.1% at 150,000
-(153 counties), and 98.6% at 250,000 (105 counties). The 150,000 cutoff keeps
-at least four counties in each selected state while substantially reducing
-unreported D1 counts; 129 of the 153 in-scope counties have D1 reported in all
-ten years. Missing D1 values remain unavailable. Both the panel builder and
-analysis script accept `--min-population-2006` to rerun the analysis with
-alternative thresholds.
+## Analysis panel and coverage
+
+The primary sample uses counties with **2006 population >= 150,000**, held fixed
+across 2006–2015. `analysis_data.py` supplies the same geographic matching,
+population scope, and MME aggregation to control selection and panel building.
+Both aggregation stages use `sum(min_count=1)`: a wholly missing MME total stays
+missing. Observed subtotals with some missing transactions remain numeric;
+`n_transactions`, `n_missing_mme`, and `mme_complete` identify their completeness.
+A county-year without any shipment record is unavailable, never assumed zero.
+
+```bash
+python code/05_build_analysis_panel.py \
+  --arcos data/intermediate/arcos_county_year_drug_buyer.parquet \
+  --population data/intermediate/population_county_year.parquet \
+  --mortality data/intermediate/mortality_county_year.parquet \
+  --output data/intermediate/analysis_panel.parquet --coverage-dir outputs
+```
+
+The default control lists are provisional legacy rankings. Pass
+`--controls-file outputs/selected_controls.json` after rerunning control selection
+with D1 and the same fixed population cutoff. Alternative scopes use
+`--min-population-2006`; the mortality outcome uses `--deaths-column`.
+
+`coverage_by_group_year.csv` and `coverage_by_state_year.csv` use **every in-scope
+population county-year** as their denominator, before any outcome is dropped.
+They include shipment/mortality record counts, numeric MME/D1 counts, partial MME
+counts, transaction counters, and reporting shares. `in_analysis_window` marks
+the default -3 through +3 policy-year window; window arguments can change it.
+The analysis script drops only the missing outcome used by each model, so MME
+and mortality regressions can have different samples. Reporting counties can
+change over time; inspect the coverage tables before interpreting trends.
+
+```bash
+python -m unittest discover -s tests -v
+```
 
 ## Workflow
 

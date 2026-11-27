@@ -1,4 +1,5 @@
 import importlib.util
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -8,6 +9,7 @@ import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "code"))
 
 
 def load_module(name, path):
@@ -74,6 +76,8 @@ class PopulationScopeTests(unittest.TestCase):
                     "drug_name": "OXYCODONE",
                     "buyer_bus_act": "RETAIL PHARMACY",
                     "opioid_mme": 100.0,
+                    "n_transactions": 1,
+                    "n_missing_mme": 0,
                 }
                 for fips in names
                 for year in (2006, 2007)

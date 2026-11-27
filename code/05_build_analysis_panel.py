@@ -1,196 +1,56 @@
-"""Build the county-year analysis panel for the pre-post and difference-in-difference models.
+"""Build FL/WA comparisons and report coverage before excluding missing outcomes.
 
-Joins three cleaned datasets on county FIPS and year with inner joins:
-
-- ARCOS opioid shipments (end buyers only, no buprenorphine), matched from ARCOS
-  county names to Census FIPS codes
-- Census county population
-- CDC drug overdose deaths
-
-Then stacks one comparison per treated state: Florida with its controls, and
-Washington with its controls. A control state can appear in both comparisons, so
-the `comparison` column identifies which one a row belongs to.
-
-Usage:
-    python code/05_build_analysis_panel.py \
-        --arcos data/intermediate/arcos_county_year_drug_buyer.parquet \
-        --population data/intermediate/population_county_year.parquet \
-        --mortality data/intermediate/mortality_county_year.parquet \
-        --output data/intermediate/analysis_panel.parquet
+The population table defines the sample using a fixed 2006 population cutoff.
+Shipments and D1 mortality are left-joined independently. Missing outcomes stay
+missing, so mortality availability cannot remove valid shipment observations.
 """
 
 import argparse
-import re
-import unicodedata
+import json
+from pathlib import Path
 
 import pandas as pd
 
-YEARS = range(2006, 2016)  # years covered by both population and mortality data
+from analysis_data import MIN_POPULATION_2006, STATE_FIPS, county_panel, coverage_summary
+
 POLICY_YEAR = {"FL": 2010, "WA": 2012}
-# From code/04_control_states.py (pre-trend ranking, excluding states with
-# concurrent pain clinic laws or binding prescribing rules).
+# Provisional legacy lists. Use the JSON from 04_control_states.py for rankings
+# based on the same outcome and fixed population sample.
 CONTROLS = {
     "FL": ["PA", "CA", "MI", "SC", "CO"],
     "WA": ["UT", "CT", "OR", "MA", "CA"],
 }
-# Same buyer and drug definition as the control-state ranking.
-END_BUYERS = {
-    "RETAIL PHARMACY",
-    "CHAIN PHARMACY",
-    "PRACTITIONER",
-    "PRACTITIONER-DW/30",
-    "PRACTITIONER-DW/100",
-    "PRACTITIONER-DW/275",
-    "MLP-NURSE PRACTITIONER",
-    "MLP-PHYSICIAN ASSISTANT",
-}
-EXCLUDED_DRUGS = {"BUPRENORPHINE"}
-STATE_FIPS = {
-    "AL": "01", "AK": "02", "AZ": "04", "AR": "05", "CA": "06", "CO": "08", "CT": "09",
-    "DE": "10", "DC": "11", "FL": "12", "GA": "13", "HI": "15", "ID": "16", "IL": "17",
-    "IN": "18", "IA": "19", "KS": "20", "KY": "21", "LA": "22", "ME": "23", "MD": "24",
-    "MA": "25", "MI": "26", "MN": "27", "MS": "28", "MO": "29", "MT": "30", "NE": "31",
-    "NV": "32", "NH": "33", "NJ": "34", "NM": "35", "NY": "36", "NC": "37", "ND": "38",
-    "OH": "39", "OK": "40", "OR": "41", "PA": "42", "RI": "44", "SC": "45", "SD": "46",
-    "TN": "47", "TX": "48", "UT": "49", "VT": "50", "VA": "51", "WA": "53", "WV": "54",
-    "WI": "55", "WY": "56",
-}
-STATE_ABBR = {v: k for k, v in STATE_FIPS.items()}
-MIN_POPULATION_2006 = 150_000
-ANALYSIS_STATES = set(POLICY_YEAR).union(*map(set, CONTROLS.values()))
-ANALYSIS_STATE_FIPS = {STATE_FIPS[state] for state in ANALYSIS_STATES}
 
 
-def name_key(name):
-    """Reduce a county name to a matching key: 'St. Lucie County' and 'SAINT LUCIE' -> 'STLUCIE'."""
-    name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().upper().strip()
-    name = re.sub(r"\bSAINTE\b", "STE", name)
-    name = re.sub(r"\bSAINT\b", "ST", name)
-    name = re.sub(r"\s+(COUNTY|PARISH)$", "", name)
-    return re.sub(r"[^A-Z]", "", name)
+def validate_controls(controls):
+    if set(controls) != set(POLICY_YEAR):
+        raise ValueError("Control lists must contain exactly FL and WA")
+    for treated, states in controls.items():
+        if not isinstance(states, list) or not states or len(states) != len(set(states)):
+            raise ValueError(f"{treated} controls must be a nonempty list of distinct states")
+        if set(states) - (set(STATE_FIPS) - {"AK", "DC", *POLICY_YEAR}):
+            raise ValueError(f"Invalid control state in {treated}: {states}")
+    return controls
 
 
-def match_fips(arcos_names, population):
-    """Map each ARCOS (state, county name) to a Census county FIPS code.
-
-    Virginia's independent cities are named 'X city' by the Census but sometimes
-    just 'X' in ARCOS, so an unmatched name is retried with 'CITY' appended.
-    """
-    census = population[["fips", "county"]].drop_duplicates()
-    census = census.assign(state_fips=census["fips"].str[:2], key=census["county"].map(name_key))
-    census = census.drop_duplicates(["state_fips", "key", "fips"])
-    if census.duplicated(["state_fips", "key"]).any():
-        raise ValueError("Two Census counties in one state share a matching key")
-    lookup = census.set_index(["state_fips", "key"])["fips"]
-
-    def find(state, county):
-        state_fips = STATE_FIPS.get(state)
-        key = name_key(county)
-        for candidate in (key, key + "CITY"):
-            if (state_fips, candidate) in lookup.index:
-                return lookup[(state_fips, candidate)]
-        return pd.NA
-
-    return arcos_names.assign(fips=[find(s, c) for s, c in zip(arcos_names["buyer_state"], arcos_names["buyer_county"])])
-
-
-def shipments(arcos, population):
-    keep = (
-        arcos["buyer_bus_act"].isin(END_BUYERS)
-        & ~arcos["drug_name"].isin(EXCLUDED_DRUGS)
-        & arcos["year"].isin(YEARS)
-    )
-    totals = arcos[keep].groupby(["buyer_state", "buyer_county", "year"])["opioid_mme"].sum().reset_index()
-    names = match_fips(totals[["buyer_state", "buyer_county"]].drop_duplicates(), population)
-    totals = totals.merge(names, on=["buyer_state", "buyer_county"], how="inner", validate="many_to_one")
-    # Territories and Alaska are not in the population data, so they never match.
-    in_states = totals["buyer_state"].isin(set(STATE_FIPS) - {"AK"})
-    unmatched = totals[totals["fips"].isna() & in_states]
-    print(f"ARCOS county names in the 49 states and DC not matched to a FIPS code: "
-          f"{unmatched[['buyer_state', 'buyer_county']].drop_duplicates().to_records(index=False).tolist()} "
-          f"({unmatched['opioid_mme'].sum() / totals.loc[in_states, 'opioid_mme'].sum():.4%} of MME)")
-    totals = totals.dropna(subset=["fips"])
-    # Two ARCOS spellings can map to one county; add them together.
-    return totals.groupby(["fips", "year"], as_index=False)["opioid_mme"].sum()
-
-
-def build_panel(
-    arcos,
-    population,
-    mortality,
-    deaths_column="d1_deaths",
-    min_population_2006=MIN_POPULATION_2006,
-):
-    if min_population_2006 < 0:
-        raise ValueError("Minimum 2006 population cannot be negative")
-
-    population = population.loc[population["year"].isin(YEARS)].copy()
-    population_for_matching = population
-    population = population.loc[
-        population["fips"].str[:2].isin(ANALYSIS_STATE_FIPS)
-    ].copy()
-    pop_2006 = population.loc[
-        population["year"].eq(2006), ["fips", "population"]
-    ].rename(columns={"population": "population_2006"})
-    if pop_2006.duplicated("fips").any():
-        raise ValueError("Duplicate 2006 population rows by county FIPS")
-    population = population.merge(
-        pop_2006,
-        on="fips",
-        how="left",
-        validate="many_to_one",
-    )
-    missing_baseline = sorted(
-        population.loc[population["population_2006"].isna(), "fips"].unique()
-    )
-    if missing_baseline:
-        raise ValueError(
-            f"Analysis counties lack a 2006 population baseline: {missing_baseline}"
-        )
-    eligible_fips = set(
-        pop_2006.loc[
-            pop_2006["population_2006"].ge(min_population_2006), "fips"
-        ]
-    )
-    print(
-        f"2006 population cutoff >= {min_population_2006:,}: "
-        f"{len(eligible_fips):,} counties in scope; "
-        f"{pop_2006['fips'].nunique() - len(eligible_fips):,} below cutoff"
-    )
-    population = population.loc[population["fips"].isin(eligible_fips)].copy()
-
-    mme = shipments(arcos, population_for_matching)
-    mme = mme.loc[mme["fips"].isin(eligible_fips)]
-    deaths = mortality.rename(columns={"county_fips": "fips", deaths_column: "overdose_deaths"})
-    deaths = deaths.loc[deaths["year"].isin(YEARS), ["fips", "year", "overdose_deaths"]]
-
-    panel = population[["fips", "county", "year", "population", "population_2006"]]
-    sizes = {"in-scope population": len(panel)}
-    panel = panel.merge(mme, on=["fips", "year"], how="inner", validate="one_to_one")
-    sizes["with shipments"] = len(panel)
-    panel = panel.merge(deaths, on=["fips", "year"], how="inner", validate="one_to_one")
-    sizes["with mortality records"] = len(panel)
-    print("County-years after each inner join: " + ", ".join(f"{k} {v:,}" for k, v in sizes.items()))
-
-    panel["state"] = panel["fips"].str[:2].map(STATE_ABBR)
-    panel["mme_per_capita"] = panel["opioid_mme"] / panel["population"]
-    panel["deaths_per_100k"] = panel["overdose_deaths"] / panel["population"] * 1e5
-
+def build_panel(arcos, population, mortality, deaths_column="d1_deaths",
+                min_population_2006=MIN_POPULATION_2006, controls=None):
+    controls = validate_controls(CONTROLS if controls is None else controls)
+    states = set(POLICY_YEAR).union(*map(set, controls.values()))
+    panel = county_panel(arcos, population, mortality, deaths_column,
+                         min_population_2006, states)
     comparisons = []
     for treated, policy_year in POLICY_YEAR.items():
-        rows = panel[panel["state"].isin([treated] + CONTROLS[treated])].copy()
+        rows = panel.loc[panel["state"].isin([treated] + controls[treated])].copy()
         rows["comparison"] = treated
-        rows["treated"] = rows["state"] == treated
+        rows["treated"] = rows["state"].eq(treated)
         rows["policy_year"] = policy_year
-        rows["post"] = rows["year"] >= policy_year
+        rows["post"] = rows["year"].ge(policy_year)
         rows["years_from_policy"] = rows["year"] - policy_year
         comparisons.append(rows)
-    columns = [
-        "comparison", "state", "fips", "county", "year", "policy_year", "years_from_policy",
-        "treated", "post", "population", "population_2006", "opioid_mme", "mme_per_capita",
-        "overdose_deaths", "deaths_per_100k",
-    ]
-    return pd.concat(comparisons, ignore_index=True)[columns].sort_values(["comparison", "state", "fips", "year"])
+    return pd.concat(comparisons, ignore_index=True).sort_values(
+        ["comparison", "state", "fips", "year"]
+    )
 
 
 def main():
@@ -199,35 +59,41 @@ def main():
     parser.add_argument("--population", required=True)
     parser.add_argument("--mortality", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument(
-        "--min-population-2006",
-        type=int,
-        default=MIN_POPULATION_2006,
-        help="scope condition: keep counties at or above this 2006 population",
-    )
-    parser.add_argument(
-        "--deaths-column",
-        default="d1_deaths",
-        help="mortality column used as the outcome",
-    )
+    parser.add_argument("--coverage-dir", default="outputs")
+    parser.add_argument("--controls-file", help="selected_controls.json from 04_control_states.py")
+    parser.add_argument("--min-population-2006", type=int, default=MIN_POPULATION_2006)
+    parser.add_argument("--deaths-column", default="d1_deaths")
+    parser.add_argument("--years-before", type=int, default=3)
+    parser.add_argument("--years-after", type=int, default=3)
     args = parser.parse_args()
-
+    controls = None
+    if args.controls_file:
+        controls = json.loads(Path(args.controls_file).read_text())
     panel = build_panel(
-        pd.read_parquet(args.arcos),
-        pd.read_parquet(args.population),
-        pd.read_parquet(args.mortality),
-        args.deaths_column,
-        args.min_population_2006,
+        pd.read_parquet(args.arcos), pd.read_parquet(args.population),
+        pd.read_parquet(args.mortality), args.deaths_column,
+        args.min_population_2006, controls,
     )
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     panel.to_parquet(args.output, index=False)
 
-    print(f"\nWrote {len(panel):,} rows to {args.output}")
-    summary = panel.groupby(["comparison", "state"]).agg(
-        counties=("fips", "nunique"),
-        county_years=("fips", "size"),
-        deaths_reported=("overdose_deaths", lambda d: d.notna().mean()),
+    # Coverage includes all in-scope rows, including absent mortality records.
+    panel["in_analysis_window"] = panel["years_from_policy"].between(
+        -args.years_before, args.years_after,
     )
-    print(summary.round(3).to_string())
+    out = Path(args.coverage_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    for level, keys in [
+        ("group", ["comparison", "treated", "year", "in_analysis_window"]),
+        ("state", ["comparison", "state", "treated", "year", "in_analysis_window"]),
+    ]:
+        summary = coverage_summary(panel, keys)
+        summary["deaths_column"] = args.deaths_column
+        summary["min_population_2006"] = args.min_population_2006
+        summary.to_csv(out / f"coverage_by_{level}_year.csv", index=False)
+        if level == "group":
+            print(summary.to_string(index=False))
+    print(f"Wrote {len(panel):,} county-year comparison rows to {args.output}")
 
 
 if __name__ == "__main__":
