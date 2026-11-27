@@ -98,6 +98,14 @@ class MissingnessTests(unittest.TestCase):
         self.assertTrue(panel.population_2006.ge(150_000).all())
         self.assertEqual(len(panel.loc[panel.comparison.eq("FL") & panel.year.eq(2006)]), 6)
 
+    def test_new_fips_without_2006_baseline_cannot_enter_fixed_scope(self):
+        population = pd.concat([population_fixture(), pd.DataFrame([
+            ("46102", "New Code County", 2007, 500_000),
+        ], columns=["fips", "county", "year", "population"])], ignore_index=True)
+        panel = county_panel(arcos_fixture(), population, mortality_fixture())
+        self.assertNotIn("46102", set(panel.fips))
+        self.assertTrue(panel.population_2006.ge(150_000).all())
+
     def test_missing_d1_column_fails_instead_of_using_old_total(self):
         with self.assertRaisesRegex(ValueError, "regenerate mortality"):
             county_panel(arcos_fixture(), population_fixture(),

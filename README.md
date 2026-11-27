@@ -80,7 +80,9 @@ an opioid-specific death count.
 ## Analysis panel and coverage
 
 The primary sample uses counties with **2006 population >= 150,000**, held fixed
-across 2006–2015. `analysis_data.py` supplies the same geographic matching,
+across 2006–2015. County FIPS without a 2006 baseline cannot satisfy the cutoff;
+they are excluded and listed in the run log rather than assigned a later-year
+population. `analysis_data.py` supplies the same geographic matching,
 population scope, and MME aggregation to control selection and panel building.
 Both aggregation stages use `sum(min_count=1)`: a wholly missing MME total stays
 missing. Observed subtotals with some missing transactions remain numeric;

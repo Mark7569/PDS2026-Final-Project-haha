@@ -106,7 +106,7 @@ def scope_population(population, min_population_2006=MIN_POPULATION_2006, states
     )
     missing = sorted(population.loc[population["population_2006"].isna(), "fips"].unique())
     if missing:
-        raise ValueError(f"Analysis counties lack a 2006 population baseline: {missing}")
+        print(f"Excluded county FIPS without a 2006 population baseline: {missing}")
     return population.loc[population["population_2006"].ge(min_population_2006)].copy()
 
 
