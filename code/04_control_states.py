@@ -4,7 +4,10 @@ For each treated state (Florida 2010, Washington 2012), compares every candidate
 state's pre-policy trend in two outcomes:
 
 - opioid shipments per capita (MME per resident, end buyers only, no buprenorphine)
-- drug overdose deaths per 100,000 residents, among counties with a reported count
+- D1 unintentional drug-poisoning deaths per 100,000 in reporting counties
+
+Both outcomes use counties with 2006 population >= 150,000. Each rate uses
+the population of counties reporting that outcome, independently of the other.
 
 Trends are compared on a common scale: each state's yearly values divided by its
 own pre-period mean, so states with different levels but parallel trends score as
@@ -19,6 +22,8 @@ Usage:
 """
 
 import argparse
+import hashlib
+import json
 from pathlib import Path
 
 import matplotlib
@@ -27,22 +32,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from analysis_data import MIN_POPULATION_2006, county_panel, coverage_summary
+
 TREATED = {"FL": 2010, "WA": 2012}
 FIRST_YEAR = 2006
-# Buyers who dispense to patients. Manufacturers and distributors only move stock
-# between businesses; hospitals, mail-order and treatment programs are left out
-# because their shipments do not reflect local prescribing.
-END_BUYERS = {
-    "RETAIL PHARMACY",
-    "CHAIN PHARMACY",
-    "PRACTITIONER",
-    "PRACTITIONER-DW/30",
-    "PRACTITIONER-DW/100",
-    "PRACTITIONER-DW/275",
-    "MLP-NURSE PRACTITIONER",
-    "MLP-PHYSICIAN ASSISTANT",
-}
-EXCLUDED_DRUGS = {"BUPRENORPHINE"}  # mainly used to treat opioid use disorder
 # Alaska is dropped per the project instructions (county boundaries change in 2010).
 # DC is not a state.
 NOT_CANDIDATES = {"AK", "DC"}
@@ -99,52 +92,38 @@ STATE_NAMES = {
     "TX": "Texas", "UT": "Utah", "VT": "Vermont", "VA": "Virginia", "WA": "Washington",
     "WV": "West Virginia", "WI": "Wisconsin", "WY": "Wyoming",
 }
-STATE_FIPS = {
-    "AL": "01", "AK": "02", "AZ": "04", "AR": "05", "CA": "06", "CO": "08", "CT": "09",
-    "DE": "10", "DC": "11", "FL": "12", "GA": "13", "HI": "15", "ID": "16", "IL": "17",
-    "IN": "18", "IA": "19", "KS": "20", "KY": "21", "LA": "22", "ME": "23", "MD": "24",
-    "MA": "25", "MI": "26", "MN": "27", "MS": "28", "MO": "29", "MT": "30", "NE": "31",
-    "NV": "32", "NH": "33", "NJ": "34", "NM": "35", "NY": "36", "NC": "37", "ND": "38",
-    "OH": "39", "OK": "40", "OR": "41", "PA": "42", "RI": "44", "SC": "45", "SD": "46",
-    "TN": "47", "TX": "48", "UT": "49", "VT": "50", "VA": "51", "WA": "53", "WV": "54",
-    "WI": "55", "WY": "56",
-}
 OUTCOMES = {
     "mme_per_capita": "Opioid shipments (MME per resident)",
-    "deaths_per_100k": "Overdose deaths per 100,000 (reporting counties)",
+    "deaths_per_100k": "D1 deaths per 100,000 (reporting counties)",
 }
 
 
-def shipments_per_capita(arcos, population):
-    """State-year MME per resident from end-buyer shipments."""
-    keep = arcos["buyer_bus_act"].isin(END_BUYERS) & ~arcos["drug_name"].isin(EXCLUDED_DRUGS)
-    mme = arcos[keep].groupby(["buyer_state", "year"])["opioid_mme"].sum().rename("mme")
-    mme = mme.reset_index().rename(columns={"buyer_state": "state"})
-    pop = population.assign(state=population["fips"].str[:2].map({v: k for k, v in STATE_FIPS.items()}))
-    pop = pop.groupby(["state", "year"])["population"].sum().reset_index()
-    out = mme.merge(pop, on=["state", "year"], how="inner")
-    return out.assign(mme_per_capita=out["mme"] / out["population"])[["state", "year", "mme_per_capita"]]
+def state_series(counties):
+    """Aggregate independently reporting counties; retain all-missing state-years.
 
-
-def deaths_per_100k(mortality, population):
-    """State-year overdose deaths per 100,000, using only counties with a reported count.
-
-    Counts under 10 are suppressed, so this rate describes reporting (mostly larger)
-    counties, which matches the project's scope condition.
+    The population denominator for each outcome matches its numerator's counties.
+    MME counters describe the entire scoped sample, including all-missing totals.
     """
-    reported = mortality.dropna(subset=["drug_overdose_deaths"]).rename(columns={"county_fips": "fips"})
-    merged = reported.merge(population[["fips", "year", "population"]], on=["fips", "year"], how="inner")
-    merged["state"] = merged["fips"].str[:2].map({v: k for k, v in STATE_FIPS.items()})
-    totals = merged.groupby(["state", "year"])[["drug_overdose_deaths", "population"]].sum().reset_index()
-    totals["deaths_per_100k"] = totals["drug_overdose_deaths"] / totals["population"] * 1e5
-    return totals[["state", "year", "deaths_per_100k"]]
+    panel = coverage_summary(counties, ["state", "year"])
+    for count, outcome, scale in [
+        ("opioid_mme", "mme_per_capita", 1),
+        ("overdose_deaths", "deaths_per_100k", 1e5),
+    ]:
+        observed = counties.loc[counties[count].notna()]
+        totals = observed.groupby(["state", "year"])[[count, "population"]].sum(min_count=1)
+        rate = (totals[count] / totals["population"] * scale).rename(outcome).reset_index()
+        panel = panel.merge(rate, on=["state", "year"], how="left", validate="one_to_one")
+    return panel
 
 
 def trend_distance(panel, outcome, treated, policy_year):
-    """RMS gap between each state's normalized pre-period trend and the treated state's."""
-    pre = panel[(panel["year"] >= FIRST_YEAR) & (panel["year"] < policy_year)].dropna(subset=[outcome])
+    """Require every expected pre-policy year and a nonzero normalizing mean."""
+    pre = panel.loc[panel["year"].between(FIRST_YEAR, policy_year - 1)]
     wide = pre.pivot(index="year", columns="state", values=outcome)
-    wide = wide.dropna(axis=1)  # require every pre-period year
+    wide = wide.reindex(range(FIRST_YEAR, policy_year)).dropna(axis=1)
+    wide = wide.loc[:, wide.mean().ne(0)]
+    if treated not in wide:
+        raise ValueError(f"{treated} lacks a complete, nonzero pre-policy series for {outcome}")
     normalized = wide / wide.mean()
     gap = normalized.sub(normalized[treated], axis=0)
     return (gap.pow(2).mean() ** 0.5).drop(treated).rename(f"{outcome}_gap")
@@ -153,10 +132,14 @@ def trend_distance(panel, outcome, treated, policy_year):
 def rank_candidates(panel, treated, policy_year):
     candidates = set(STATE_NAMES) - NOT_CANDIDATES - set(TREATED)
     scores = pd.concat([trend_distance(panel, o, treated, policy_year) for o in OUTCOMES], axis=1)
-    scores = scores[scores.index.isin(candidates)]
+    # Include states without an eligible county or a complete pre-period series
+    # in the audit ranking, with unavailable scores rather than silently omitting them.
+    scores = scores.reindex(sorted(candidates))
     scores["mean_gap"] = scores.mean(axis=1, skipna=False)
     scores["concurrent_policy"] = [concurrent_policies(s, policy_year) for s in scores.index]
-    return scores.sort_values("mean_gap")
+    return scores.rename_axis("state").reset_index().sort_values(
+        ["mean_gap", "state"], na_position="last",
+    ).set_index("state")
 
 
 def plot_trends(panel, treated, policy_year, controls, path):
@@ -189,24 +172,55 @@ def main():
     parser.add_argument("--mortality", required=True)
     parser.add_argument("--output-dir", default="outputs")
     parser.add_argument("--n-controls", type=int, default=5)
+    parser.add_argument("--min-population-2006", type=int, default=MIN_POPULATION_2006)
+    parser.add_argument("--deaths-column", default="d1_deaths")
     args = parser.parse_args()
-
-    population = pd.read_parquet(args.population)
-    panel = shipments_per_capita(pd.read_parquet(args.arcos), population).merge(
-        deaths_per_100k(pd.read_parquet(args.mortality), population), on=["state", "year"], how="outer"
+    if args.n_controls < 1:
+        parser.error("--n-controls must be at least 1")
+    counties = county_panel(
+        pd.read_parquet(args.arcos), pd.read_parquet(args.population),
+        pd.read_parquet(args.mortality), args.deaths_column, args.min_population_2006,
     )
+    panel = state_series(counties)
+    if args.deaths_column != "d1_deaths":
+        OUTCOMES["deaths_per_100k"] = f"{args.deaths_column} per 100,000 (reporting counties)"
 
     out = Path(args.output_dir)
     (out / "figures").mkdir(parents=True, exist_ok=True)
+    audit = panel.assign(deaths_column=args.deaths_column,
+                         min_population_2006=args.min_population_2006)
+    audit.to_csv(out / "control_state_year_coverage.csv", index=False)
+    selections = {}
     for treated, policy_year in TREATED.items():
         ranking = rank_candidates(panel, treated, policy_year)
+        eligible = ranking.loc[ranking["concurrent_policy"].eq("") & ranking["mean_gap"].notna()]
+        if len(eligible) < args.n_controls:
+            raise ValueError(f"Only {len(eligible)} eligible controls for {treated}; requested {args.n_controls}")
+        controls = eligible.index[:args.n_controls].tolist()
+        selections[treated] = controls
+        ranking["selected"] = ranking.index.isin(controls)
+        ranking["deaths_column"] = args.deaths_column
+        ranking["min_population_2006"] = args.min_population_2006
         ranking.to_csv(out / f"control_ranking_{treated.lower()}.csv")
-        eligible = ranking[(ranking["concurrent_policy"] == "") & ranking["mean_gap"].notna()]
-        controls = eligible.index[: args.n_controls].tolist()
         plot_trends(panel, treated, policy_year, controls, out / "figures" / f"pretrends_{treated.lower()}.png")
         print(f"\n{STATE_NAMES[treated]} (policy {policy_year}), best matches first:")
         print(ranking.head(12).round(3).to_string())
         print(f"Suggested controls: {controls}")
+    (out / "selected_controls.json").write_text(json.dumps(selections, indent=2) + "\n")
+    (out / "control_selection_metadata.json").write_text(json.dumps({
+        "deaths_column": args.deaths_column,
+        "min_population_2006": args.min_population_2006,
+        "first_pre_policy_year": FIRST_YEAR,
+        "n_controls": args.n_controls,
+        "rate_denominator": "population of scoped counties reporting the same outcome",
+        "inputs": {
+            name: {"file": Path(path).name,
+                   "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest()}
+            for name, path in {"arcos": args.arcos, "population": args.population,
+                               "mortality": args.mortality}.items()
+        },
+        "selections": selections,
+    }, indent=2) + "\n")
 
 
 if __name__ == "__main__":

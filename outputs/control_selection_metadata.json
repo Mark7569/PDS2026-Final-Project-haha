@@ -1,0 +1,37 @@
+{
+  "deaths_column": "d1_deaths",
+  "min_population_2006": 150000,
+  "first_pre_policy_year": 2006,
+  "n_controls": 5,
+  "rate_denominator": "population of scoped counties reporting the same outcome",
+  "inputs": {
+    "arcos": {
+      "file": "arcos_county_year_drug_buyer.parquet",
+      "sha256": "f38cb97fd9a61e5de12bfe5211a72b8f4bf14e8a34be3d6f9f5f82b43439c908"
+    },
+    "population": {
+      "file": "population_county_year.parquet",
+      "sha256": "3fde761990131e41acac13e0151a5f63fc74d9e9f20aed722e8461526b42006c"
+    },
+    "mortality": {
+      "file": "mortality_county_year.parquet",
+      "sha256": "1ce21893b0610938c0ff8f06e8ec49e5b94238c325e5627c53cd2f423ef9ec6f"
+    }
+  },
+  "selections": {
+    "FL": [
+      "CA",
+      "PA",
+      "CO",
+      "IA",
+      "MI"
+    ],
+    "WA": [
+      "CT",
+      "OR",
+      "KS",
+      "MA",
+      "CA"
+    ]
+  }
+}

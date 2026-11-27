@@ -97,10 +97,11 @@ python code/05_build_analysis_panel.py \
   --output data/intermediate/analysis_panel.parquet --coverage-dir outputs
 ```
 
-The default control lists are provisional legacy rankings. Pass
-`--controls-file outputs/selected_controls.json` after rerunning control selection
-with D1 and the same fixed population cutoff. Alternative scopes use
-`--min-population-2006`; the mortality outcome uses `--deaths-column`.
+The default control lists use the regenerated D1 / 150,000-baseline rankings:
+Florida: **CA, PA, CO, IA, MI**; Washington: **CT, OR, KS, MA, CA**. Pass
+`--controls-file outputs/selected_controls.json` to use a fresh selection.
+Alternative scopes use `--min-population-2006`; the mortality outcome uses
+`--deaths-column`. Rerun control selection before building an alternative sample.
 
 `coverage_by_group_year.csv` and `coverage_by_state_year.csv` use **every in-scope
 population county-year** as their denominator, before any outcome is dropped.
@@ -114,6 +115,46 @@ change over time; inspect the coverage tables before interpreting trends.
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+## Control-state selection
+
+```bash
+python code/04_control_states.py \
+  --arcos data/intermediate/arcos_county_year_drug_buyer.parquet \
+  --population data/intermediate/population_county_year.parquet \
+  --mortality data/intermediate/mortality_county_year.parquet \
+  --output-dir outputs --deaths-column d1_deaths --min-population-2006 150000
+
+python code/05_build_analysis_panel.py \
+  --arcos data/intermediate/arcos_county_year_drug_buyer.parquet \
+  --population data/intermediate/population_county_year.parquet \
+  --mortality data/intermediate/mortality_county_year.parquet \
+  --controls-file outputs/selected_controls.json \
+  --output data/intermediate/analysis_panel.parquet --coverage-dir outputs
+```
+
+Control selection uses the same county matching, buyer/drug restrictions and
+fixed population cutoff as the panel. State rates divide each observed subtotal
+by the population of counties reporting that outcome. Mortality missingness
+does not restrict MME. `control_state_year_coverage.csv` retains counters and
+availability before exclusions; it does not assume missing counts are zero.
+
+For each outcome, the ranking compares state trends normalized by their own
+pre-policy mean, using all years from 2006 through the year before the policy.
+The score averages the two root-mean-square gaps. A missing pre-year or zero
+pre-period mean makes that outcome score unavailable. The top five states with
+both scores and no concurrent policy in the existing policy table are selected.
+Unavailable candidates remain visible in the CSV rankings. Input file hashes,
+parameters, and selections are saved in `control_selection_metadata.json`.
+
+The ranking chooses the closest available matches; it does not establish
+parallel trends. Florida's shipment trend and Washington's pre-2012 decline
+still need discussion. The existing policy table does not systematically cover
+mandatory PDMP-use laws. D1 reporting counties may also change over time.
+
+PR #5 builds on the shared sample fixes in PR #4, which incorporates the D1 and
+population-cutoff changes from PR #6. Review/merge #4 before #5 so the latter's
+remaining diff isolates control selection and regenerated outputs.
 
 ## Workflow
 
