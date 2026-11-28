@@ -1,0 +1,100 @@
+"""Build FL/WA comparisons and report coverage before excluding missing outcomes.
+
+The population table defines the sample using a fixed 2006 population cutoff.
+Shipments and D1 mortality are left-joined independently. Missing outcomes stay
+missing, so mortality availability cannot remove valid shipment observations.
+"""
+
+import argparse
+import json
+from pathlib import Path
+
+import pandas as pd
+
+from analysis_data import MIN_POPULATION_2006, STATE_FIPS, county_panel, coverage_summary
+
+POLICY_YEAR = {"FL": 2010, "WA": 2012}
+# Provisional legacy lists. Use the JSON from 04_control_states.py for rankings
+# based on the same outcome and fixed population sample.
+CONTROLS = {
+    "FL": ["PA", "CA", "MI", "SC", "CO"],
+    "WA": ["UT", "CT", "OR", "MA", "CA"],
+}
+
+
+def validate_controls(controls):
+    if set(controls) != set(POLICY_YEAR):
+        raise ValueError("Control lists must contain exactly FL and WA")
+    for treated, states in controls.items():
+        if not isinstance(states, list) or not states or len(states) != len(set(states)):
+            raise ValueError(f"{treated} controls must be a nonempty list of distinct states")
+        if set(states) - (set(STATE_FIPS) - {"AK", "DC", *POLICY_YEAR}):
+            raise ValueError(f"Invalid control state in {treated}: {states}")
+    return controls
+
+
+def build_panel(arcos, population, mortality, deaths_column="d1_deaths",
+                min_population_2006=MIN_POPULATION_2006, controls=None):
+    controls = validate_controls(CONTROLS if controls is None else controls)
+    states = set(POLICY_YEAR).union(*map(set, controls.values()))
+    panel = county_panel(arcos, population, mortality, deaths_column,
+                         min_population_2006, states)
+    comparisons = []
+    for treated, policy_year in POLICY_YEAR.items():
+        rows = panel.loc[panel["state"].isin([treated] + controls[treated])].copy()
+        rows["comparison"] = treated
+        rows["treated"] = rows["state"].eq(treated)
+        rows["policy_year"] = policy_year
+        rows["post"] = rows["year"].ge(policy_year)
+        rows["years_from_policy"] = rows["year"] - policy_year
+        comparisons.append(rows)
+    return pd.concat(comparisons, ignore_index=True).sort_values(
+        ["comparison", "state", "fips", "year"]
+    )
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--arcos", required=True)
+    parser.add_argument("--population", required=True)
+    parser.add_argument("--mortality", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--coverage-dir", default="outputs")
+    parser.add_argument("--controls-file", help="selected_controls.json from 04_control_states.py")
+    parser.add_argument("--min-population-2006", type=int, default=MIN_POPULATION_2006)
+    parser.add_argument("--deaths-column", default="d1_deaths")
+    parser.add_argument("--years-before", type=int, default=3)
+    parser.add_argument("--years-after", type=int, default=3)
+    args = parser.parse_args()
+    controls = None
+    if args.controls_file:
+        controls = json.loads(Path(args.controls_file).read_text())
+    panel = build_panel(
+        pd.read_parquet(args.arcos), pd.read_parquet(args.population),
+        pd.read_parquet(args.mortality), args.deaths_column,
+        args.min_population_2006, controls,
+    )
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    panel.to_parquet(args.output, index=False)
+
+    # Coverage includes all in-scope rows, including absent mortality records.
+    panel["in_analysis_window"] = panel["years_from_policy"].between(
+        -args.years_before, args.years_after,
+    )
+    out = Path(args.coverage_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    for level, keys in [
+        ("group", ["comparison", "treated", "year", "in_analysis_window"]),
+        ("state", ["comparison", "state", "treated", "year", "in_analysis_window"]),
+    ]:
+        summary = coverage_summary(panel, keys)
+        summary["deaths_column"] = args.deaths_column
+        summary["min_population_2006"] = args.min_population_2006
+        summary.to_csv(out / f"coverage_by_{level}_year.csv", index=False)
+        if level == "group":
+            print(summary.to_string(index=False))
+    print(f"Wrote {len(panel):,} county-year comparison rows to {args.output}")
+
+
+if __name__ == "__main__":
+    main()
